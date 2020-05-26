@@ -8,6 +8,9 @@ from skimage.filters import gaussian
 from skimage.segmentation import find_boundaries
 from torchvision.transforms import Compose
 
+# WARN: use fixed random state for reproducibility; if you want to randomize on each run seed with `time.time()` e.g.
+GLOBAL_RANDOM_STATE = np.random.RandomState(47)
+
 
 class RandomFlip:
     """
@@ -98,18 +101,21 @@ class RandomRotate:
 
 class RandomContrast:
     """
-        Adjust the brightness of an image by a random factor.
+        Adjust contrast by scaling each voxel to `mean + alpha * (v - mean)`.
     """
 
-    def __init__(self, random_state, factor=0.5, execution_probability=0.1, **kwargs):
+    def __init__(self, random_state, alpha=(0.5, 1.5), mean=0.0, execution_probability=0.1, **kwargs):
         self.random_state = random_state
-        self.factor = factor
+        assert len(alpha) == 2
+        self.alpha = alpha
+        self.mean = mean
         self.execution_probability = execution_probability
 
     def __call__(self, m):
         if self.random_state.uniform() < self.execution_probability:
-            brightness_factor = self.factor + self.random_state.uniform()
-            return np.clip(m * brightness_factor, 0, 1)
+            alpha = self.random_state.uniform(self.alpha[0], self.alpha[1])
+            result = self.mean + alpha * (m - self.mean)
+            return np.clip(result, -1, 1)
 
         return m
 
@@ -118,11 +124,11 @@ class RandomContrast:
 # remember to use spline_order=3 when transforming the labels
 class ElasticDeformation:
     """
-    Apply elasitc deformations of 3D patches on a per-voxel mesh. Assumes ZYX axis order!
+    Apply elasitc deformations of 3D patches on a per-voxel mesh. Assumes ZYX axis order (or CZYX if the data is 4D).
     Based on: https://github.com/fcalvet/image_tools/blob/master/image_augmentation.py#L62
     """
 
-    def __init__(self, random_state, spline_order, alpha=15, sigma=3, execution_probability=0.3, **kwargs):
+    def __init__(self, random_state, spline_order, alpha=15, sigma=3, execution_probability=0.1, **kwargs):
         """
         :param spline_order: the order of spline interpolation (use 0 for labeled images)
         :param alpha: scaling factor for deformations
@@ -136,15 +142,29 @@ class ElasticDeformation:
 
     def __call__(self, m):
         if self.random_state.uniform() < self.execution_probability:
-            assert m.ndim == 3
-            dz = gaussian_filter(self.random_state.randn(*m.shape), self.sigma, mode="constant", cval=0) * self.alpha
-            dy = gaussian_filter(self.random_state.randn(*m.shape), self.sigma, mode="constant", cval=0) * self.alpha
-            dx = gaussian_filter(self.random_state.randn(*m.shape), self.sigma, mode="constant", cval=0) * self.alpha
+            assert m.ndim in [3, 4]
 
-            z_dim, y_dim, x_dim = m.shape
+            if m.ndim == 3:
+                volume_shape = m.shape
+            else:
+                volume_shape = m[0].shape
+
+            dz = gaussian_filter(self.random_state.randn(*volume_shape), self.sigma, mode="constant",
+                                 cval=0) * self.alpha
+            dy = gaussian_filter(self.random_state.randn(*volume_shape), self.sigma, mode="constant",
+                                 cval=0) * self.alpha
+            dx = gaussian_filter(self.random_state.randn(*volume_shape), self.sigma, mode="constant",
+                                 cval=0) * self.alpha
+
+            z_dim, y_dim, x_dim = volume_shape
             z, y, x = np.meshgrid(np.arange(z_dim), np.arange(y_dim), np.arange(x_dim), indexing='ij')
             indices = z + dz, y + dy, x + dx
-            return map_coordinates(m, indices, order=self.spline_order, mode='reflect')
+
+            if m.ndim == 3:
+                return map_coordinates(m, indices, order=self.spline_order, mode='reflect')
+            else:
+                channels = [map_coordinates(c, indices, order=self.spline_order, mode='reflect') for c in m]
+                return np.stack(channels, axis=0)
 
         return m
 
@@ -221,8 +241,40 @@ class AbstractLabelToBoundary:
 
 
 class StandardLabelToBoundary:
-    def __init__(self, ignore_index=None, append_label=False, blur=False, sigma=1, **kwargs):
+    def __init__(self, ignore_index=None, append_label=False, blur=False, sigma=1, mode='thick', blobs=False, **kwargs):
         self.ignore_index = ignore_index
+        self.append_label = append_label
+        self.blur = blur
+        self.sigma = sigma
+        self.mode = mode
+        self.blobs = blobs
+
+    def __call__(self, m):
+        assert m.ndim == 3
+
+        boundaries = find_boundaries(m, connectivity=2, mode=self.mode)
+        if self.blur:
+            boundaries = blur_boundary(boundaries, self.sigma)
+
+        results = []
+        if self.blobs:
+            blobs = (m > 0).astype('uint8')
+            results.append(_recover_ignore_index(blobs, m, self.ignore_index))
+
+        results.append(_recover_ignore_index(boundaries, m, self.ignore_index))
+
+        if self.append_label:
+            # append original input data
+            results.append(m)
+
+        return np.stack(results, axis=0)
+
+
+class BlobsWithBoundary:
+    def __init__(self, mode=None, append_label=False, blur=False, sigma=1, **kwargs):
+        if mode is None:
+            mode = ['thick', 'inner', 'outer']
+        self.mode = mode
         self.append_label = append_label
         self.blur = blur
         self.sigma = sigma
@@ -230,14 +282,16 @@ class StandardLabelToBoundary:
     def __call__(self, m):
         assert m.ndim == 3
 
-        boundaries = find_boundaries(m, connectivity=2)
-        if self.blur:
-            boundaries = blur_boundary(boundaries, self.sigma)
+        # get the segmentation mask
+        results = [(m > 0).astype('uint8')]
 
-        results = [_recover_ignore_index(boundaries, m, self.ignore_index)]
+        for bm in self.mode:
+            boundary = find_boundaries(m, connectivity=2, mode=bm)
+            if self.blur:
+                boundary = blur_boundary(boundary, self.sigma)
+            results.append(boundary)
 
         if self.append_label:
-            # append original input data
             results.append(m)
 
         return np.stack(results, axis=0)
@@ -306,14 +360,40 @@ class LabelToAffinities(AbstractLabelToBoundary):
         return self.kernels
 
 
+class LabelToZAffinities(AbstractLabelToBoundary):
+    """
+    Converts a given volumetric label array to binary mask corresponding to borders between labels (which can be seen
+    as an affinity graph: https://arxiv.org/pdf/1706.00120.pdf)
+    One specify the offsets (thickness) of the border. The boundary will be computed via the convolution operator.
+    """
+
+    def __init__(self, offsets, ignore_index=None, append_label=False, **kwargs):
+        super().__init__(ignore_index=ignore_index, append_label=append_label)
+
+        assert isinstance(offsets, list) or isinstance(offsets, tuple), 'offsets must be a list or a tuple'
+        assert all(a > 0 for a in offsets), "'offsets must be positive"
+        assert len(set(offsets)) == len(offsets), "'offsets' must be unique"
+
+        self.kernels = []
+        z_axis = self.AXES_TRANSPOSE[2]
+        # create kernels
+        for z_offset in offsets:
+            self.kernels.append(self.create_kernel(z_axis, z_offset))
+
+    def get_kernels(self):
+        return self.kernels
+
+
 class LabelToBoundaryAndAffinities:
     """
     Combines the StandardLabelToBoundary and LabelToAffinities in the hope
     that that training the network to predict both would improve the main task: boundary prediction.
     """
 
-    def __init__(self, xy_offsets, z_offsets, append_label=False, blur=False, sigma=1, ignore_index=None, **kwargs):
-        self.l2b = StandardLabelToBoundary(blur=blur, sigma=sigma, ignore_index=ignore_index)
+    def __init__(self, xy_offsets, z_offsets, append_label=False, blur=False, sigma=1, ignore_index=None, mode='thick',
+                 blobs=False, **kwargs):
+        # blur only StandardLabelToBoundary results; we don't want to blur the affinities
+        self.l2b = StandardLabelToBoundary(blur=blur, sigma=sigma, ignore_index=ignore_index, mode=mode, blobs=blobs)
         self.l2a = LabelToAffinities(offsets=xy_offsets, z_offsets=z_offsets, append_label=append_label,
                                      ignore_index=ignore_index)
 
@@ -321,6 +401,44 @@ class LabelToBoundaryAndAffinities:
         boundary = self.l2b(m)
         affinities = self.l2a(m)
         return np.concatenate((boundary, affinities), axis=0)
+
+
+class FlyWingBoundary:
+    """
+    Use if the volume contains a single pixel boundaries between labels. Gives the single pixel boundary in the 1st
+    channel and the 'thick' boundary in the 2nd channel and optional z-affinities
+    """
+
+    def __init__(self, append_label=False, thick_boundary=True, ignore_index=None, z_offsets=None, **kwargs):
+        self.append_label = append_label
+        self.thick_boundary = thick_boundary
+        self.ignore_index = ignore_index
+        self.lta = None
+        if z_offsets is not None:
+            self.lta = LabelToZAffinities(z_offsets, ignore_index=ignore_index)
+
+    def __call__(self, m):
+        boundary = (m == 0).astype('uint8')
+        results = [boundary]
+
+        if self.thick_boundary:
+            t_boundary = find_boundaries(m, connectivity=1, mode='outer', background=0)
+            results.append(t_boundary)
+
+        if self.lta is not None:
+            z_affs = self.lta(m)
+            for z_aff in z_affs:
+                results.append(z_aff)
+
+        if self.ignore_index is not None:
+            for b in results:
+                b[m == self.ignore_index] = self.ignore_index
+
+        if self.append_label:
+            # append original input data
+            results.append(m)
+
+        return np.stack(results, axis=0)
 
 
 class LabelToMaskAndAffinities:
@@ -336,41 +454,62 @@ class LabelToMaskAndAffinities:
         return np.concatenate((mask, affinities), axis=0)
 
 
-class Normalize:
+class Standardize:
     """
-    Normalizes a given input tensor to be 0-mean and 1-std.
-    mean and std parameter have to be provided explicitly.
+    Apply Z-score normalization to a given input tensor, i.e. re-scaling the values to be 0-mean and 1-std.
+    Mean and std parameter have to be provided explicitly.
     """
 
-    def __init__(self, mean, std, eps=1e-4, **kwargs):
+    def __init__(self, mean, std, eps=1e-6, **kwargs):
         self.mean = mean
         self.std = std
         self.eps = eps
 
     def __call__(self, m):
-        return (m - self.mean) / (self.std + self.eps)
+        return (m - self.mean) / np.clip(self.std, a_min=self.eps, a_max=None)
 
 
-class RangeNormalize:
-    def __init__(self, max_value=255, **kwargs):
-        self.max_value = max_value
+class Normalize:
+    """
+    Apply simple min-max scaling to a given input tensor, i.e. shrinks the range of the data in a fixed range of [-1, 1].
+    """
+
+    def __init__(self, min_value, max_value, **kwargs):
+        assert max_value > min_value
+        self.min_value = min_value
+        self.value_range = max_value - min_value
 
     def __call__(self, m):
-        return m / self.max_value
+        norm_0_1 = (m - self.min_value) / self.value_range
+        return 2 * norm_0_1 - 1
 
 
-class GaussianNoise:
-    def __init__(self, random_state, max_sigma, max_value=255, **kwargs):
+class AdditiveGaussianNoise:
+    def __init__(self, random_state, scale=(0.0, 1.0), execution_probability=0.1, **kwargs):
+        self.execution_probability = execution_probability
         self.random_state = random_state
-        self.max_sigma = max_sigma
-        self.max_value = max_value
+        self.scale = scale
 
     def __call__(self, m):
-        # pick std dev from [0; max_sigma]
-        std = self.random_state.randint(self.max_sigma)
-        gaussian_noise = self.random_state.normal(0, std, m.shape)
-        noisy_m = m + gaussian_noise
-        return np.clip(noisy_m, 0, self.max_value).astype(m.dtype)
+        if self.random_state.uniform() < self.execution_probability:
+            std = self.random_state.uniform(self.scale[0], self.scale[1])
+            gaussian_noise = self.random_state.normal(0, std, size=m.shape)
+            return m + gaussian_noise
+        return m
+
+
+class AdditivePoissonNoise:
+    def __init__(self, random_state, lam=(0.0, 1.0), execution_probability=0.1, **kwargs):
+        self.execution_probability = execution_probability
+        self.random_state = random_state
+        self.lam = lam
+
+    def __call__(self, m):
+        if self.random_state.uniform() < self.execution_probability:
+            lam = self.random_state.uniform(self.lam[0], self.lam[1])
+            poisson_noise = self.random_state.poisson(lam, size=m.shape)
+            return m + poisson_noise
+        return m
 
 
 class ToTensor:
@@ -392,25 +531,45 @@ class ToTensor:
         return torch.from_numpy(m.astype(dtype=self.dtype))
 
 
+class Relabel:
+    """
+    Relabel a numpy array of labels into a consecutive numbers, e.g.
+    [10,10, 0, 6, 6] -> [2, 2, 0, 1, 1]. Useful when one has an instance segmentation volume
+    at hand and would like to create a one-hot-encoding for it. Without a consecutive labeling the task would be harder.
+    """
+
+    def __init__(self, **kwargs):
+        pass
+
+    def __call__(self, m):
+        _, unique_labels = np.unique(m, return_inverse=True)
+        m = unique_labels.reshape(m.shape)
+        return m
+
+
 class Identity:
+    def __init__(self, **kwargs):
+        pass
+
     def __call__(self, m):
         return m
 
 
-def get_transformer(config, mean, std, phase):
+def get_transformer(config, min_value, max_value, mean, std, phase):
     if phase == 'val':
         phase = 'test'
 
     assert phase in config, f'Cannot find transformer config for phase: {phase}'
     phase_config = config[phase]
-    return Transformer(phase_config, mean, std)
+    base_config = {'min_value': min_value, 'max_value': max_value, 'mean': mean, 'std': std}
+    return Transformer(phase_config, base_config)
 
 
 class Transformer:
-    def __init__(self, phase_config, mean, std):
+    def __init__(self, phase_config, base_config):
         self.phase_config = phase_config
-        self.config_base = {'mean': mean, 'std': std}
-        self.seed = 47
+        self.config_base = base_config
+        self.seed = GLOBAL_RANDOM_STATE.randint(10000000)
 
     def raw_transform(self):
         return self._create_transform('raw')

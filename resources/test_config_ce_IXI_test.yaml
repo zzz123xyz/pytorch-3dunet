@@ -1,0 +1,71 @@
+# path to the checkpoint file containing the model
+# model_path: 3dunet/last_checkpoint.pytorch
+model_path: 3dunet_test/last_checkpoint.pytorch
+
+# Should the patches be stored in memory or written directly to H5 during prediction.
+# Set to True if you have enough RAM cause it's way faster
+store_predictions_in_memory: True
+# model configuration
+model:
+  # model class
+  name: UNet3D
+  # number of input channels to the model
+  in_channels: 1
+  # number of output channels
+  out_channels: 5
+  # determines the order of operators in a single layer (crg - Conv3d+ReLU+GroupNorm)
+  layer_order: crg
+  # feature maps scale factor
+  f_maps: 32
+  # basic module
+  basic_module: DoubleConv
+  # number of groups in the groupnorm
+  num_groups: 8
+  # apply element-wise nn.Sigmoid after the final 1x1 convolution, otherwise apply nn.Softmax
+  final_sigmoid: false
+# specify the test datasets
+datasets:
+  # patch size given to the network (adapt to fit in your GPU mem)
+  patch: [64, 128, 128]
+  # stride between patches (make sure the the patches overlap in order to get smoother prediction maps)
+  stride: [32, 100, 100]
+  # path to the raw data within the H5
+  raw_internal_path: raw
+  # how many subprocesses to use for data loading
+  num_workers: 8
+  # paths to the datasets
+  test_path:
+    # - 'resources/val_hdf5_from_124/IXI392-Guys-1064-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI405-Guys-0948-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI408-Guys-0962-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI412-Guys-0949-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI413-Guys-0955-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI414-Guys-0957-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI415-Guys-0942-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI416-Guys-1051-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI418-Guys-0956-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI428-Guys-0996-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI429-Guys-0997-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI436-HH-2153-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI459-Guys-0992-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI467-Guys-0983-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI468-Guys-0985-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI473-IOP-1137-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI479-Guys-1034-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI480-Guys-1033-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI482-HH-2178-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI487-Guys-1037-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI494-Guys-1008-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI495-Guys-1009-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI499-Guys-1004-T1.h5'
+    # - 'resources/val_hdf5_from_124/IXI510-IOP-1143-T1.h5'
+
+    - '../IXI_hdf5_test/IXI002-Guys-0828-T1_reg.h5'
+    - '../IXI_hdf5_test/IXI012-HH-1211-T1_reg.h5'
+    - '../IXI_hdf5_test/IXI013-HH-1212-T1_reg.h5'
+  transformer:
+    test:
+      raw:
+        - name: Normalize
+        - name: ToTensor
+          expand_dims: true

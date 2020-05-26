@@ -1,6 +1,6 @@
 import numpy as np
 
-from augment.transforms import RandomLabelToAffinities, LabelToAffinities, Transformer
+from augment.transforms import RandomLabelToAffinities, LabelToAffinities, Transformer, Relabel
 
 
 class TestTransforms:
@@ -52,13 +52,20 @@ class TestTransforms:
         assert result.shape == (6,) + label.shape
         assert np.array_equal(np.unique(result), [0, 1])
 
+    def test_relabel(self):
+        label = np.array([[10, 10, 10], [0, 0, 0], [5, 5, 5]])
+        r = Relabel()
+        result = r(label)
+        assert np.array_equal(result, np.array([[2, 2, 2], [0, 0, 0], [1, 1, 1]]))
+
     def test_BaseTransformer(self):
         config = {
-            'raw': [{'name': 'Normalize'}, {'name': 'ToTensor', 'expand_dims': True}],
+            'raw': [{'name': 'Standardize'}, {'name': 'ToTensor', 'expand_dims': True}],
             'label': [{'name': 'ToTensor', 'expand_dims': False, 'dtype': 'long'}],
             'weight': [{'name': 'ToTensor', 'expand_dims': False}]
         }
-        transformer = Transformer(config, 0, 1)
+        base_config = {'mean': 0, 'std': 1}
+        transformer = Transformer(config, base_config)
         raw_transforms = transformer.raw_transform().transforms
         assert raw_transforms[0].mean == 0
         assert raw_transforms[0].std == 1
@@ -72,7 +79,7 @@ class TestTransforms:
     def test_StandardTransformer(self):
         config = {
             'raw': [
-                {'name': 'Normalize'},
+                {'name': 'Standardize'},
                 {'name': 'RandomContrast', 'execution_probability': 0.5},
                 {'name': 'RandomFlip'},
                 {'name': 'RandomRotate90'},
@@ -84,7 +91,8 @@ class TestTransforms:
                 {'name': 'ToTensor', 'expand_dims': False, 'dtype': 'long'}
             ]
         }
-        transformer = Transformer(config, 0, 1)
+        base_config = {'mean': 0, 'std': 1}
+        transformer = Transformer(config, base_config)
         raw_transforms = transformer.raw_transform().transforms
         assert raw_transforms[0].mean == 0
         assert raw_transforms[0].std == 1
@@ -96,7 +104,7 @@ class TestTransforms:
     def test_AnisotropicRotationTransformer(self):
         config = {
             'raw': [
-                {'name': 'Normalize'},
+                {'name': 'Standardize'},
                 {'name': 'RandomContrast', 'execution_probability': 0.5},
                 {'name': 'RandomFlip'},
                 {'name': 'RandomRotate90'},
@@ -110,7 +118,8 @@ class TestTransforms:
                 {'name': 'ToTensor', 'expand_dims': False, 'dtype': 'long'}
             ]
         }
-        transformer = Transformer(config, 0, 1)
+        base_config = {'mean': 0, 'std': 1}
+        transformer = Transformer(config, base_config)
         raw_transforms = transformer.raw_transform().transforms
         assert raw_transforms[0].mean == 0
         assert raw_transforms[0].std == 1
@@ -123,7 +132,7 @@ class TestTransforms:
     def test_LabelToBoundaryTransformer(self):
         config = {
             'raw': [
-                {'name': 'Normalize'},
+                {'name': 'Standardize'},
                 {'name': 'RandomContrast', 'execution_probability': 0.5},
                 {'name': 'RandomFlip'},
                 {'name': 'RandomRotate90'},
@@ -138,7 +147,8 @@ class TestTransforms:
                 {'name': 'ToTensor', 'expand_dims': False, 'dtype': 'long'}
             ]
         }
-        transformer = Transformer(config, 0, 1)
+        base_config = {'mean': 0, 'std': 1}
+        transformer = Transformer(config, base_config)
         raw_transforms = transformer.raw_transform().transforms
         assert raw_transforms[0].mean == 0
         assert raw_transforms[0].std == 1
@@ -171,7 +181,8 @@ class TestTransforms:
                 {'name': 'ToTensor', 'expand_dims': False, 'dtype': 'long'}
             ]
         }
-        transformer = Transformer(config, 0, 1)
+        base_config = {'mean': 0, 'std': 1}
+        transformer = Transformer(config, base_config)
         label_transforms = transformer.label_transform().transforms
         assert label_transforms[3].offsets == (1, 2, 3, 4)
 

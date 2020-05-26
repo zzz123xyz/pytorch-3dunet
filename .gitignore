@@ -12,3 +12,23 @@ logs/
 
 # PyTorch models
 *.pytorch
+train_hdf5
+3dunet_dice_full_brain_round_singlechannel_NaN_processed_2nd
+3dunet_25_10
+3dunet_dice_test
+3dunet_GDL
+3dunet
+3dunet_test
+3dunet_IXI_first
+3dunet_dice_full_brain_round_singlechannel_NaN_processed_2nd
+3dunet_dice_full_brain_round_singlechannel_NaN_processed
+3dunet_dice_full_brain_round_singlechannel
+3dunet_25_10_full_brain_round_singlechannel_record_from_train_25
+3dunet_25_10_full_brain_round_singlechannel
+3dunet_25_10_multimodel
+*.h5
+*.gz
+
+# nifti data files
+*.nii
+*.nii.gz

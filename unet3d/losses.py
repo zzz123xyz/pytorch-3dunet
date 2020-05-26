@@ -4,14 +4,19 @@ from torch import nn as nn
 from torch.autograd import Variable
 from torch.nn import MSELoss, SmoothL1Loss, L1Loss
 
+from embeddings.contrastive_loss import ContrastiveLoss
+from unet3d.utils import expand_as_one_hot
+# import ipdb
+
 
 def compute_per_channel_dice(input, target, epsilon=1e-5, ignore_index=None, weight=None):
     # assumes that input is a normalized probability
-
+    # ipdb.set_trace()
     # input and target shapes must match
     assert input.size() == target.size(), "'input' and 'target' must have the same shape"
 
     # mask ignore_index if present
+    target = target.float()
     if ignore_index is not None:
         mask = target.clone().ne_(ignore_index)
         mask.requires_grad = False
@@ -22,7 +27,6 @@ def compute_per_channel_dice(input, target, epsilon=1e-5, ignore_index=None, wei
     input = flatten(input)
     target = flatten(target)
 
-    target = target.float()
     # Compute per channel Dice Coefficient
     intersect = (input * target).sum(-1)
     if weight is not None:
@@ -105,7 +109,8 @@ class GeneralizedDiceLoss(nn.Module):
 
         target = target.float()
         target_sum = target.sum(-1)
-        class_weights = Variable(1. / (target_sum * target_sum).clamp(min=self.epsilon), requires_grad=False)
+        class_weights = Variable(
+            1. / (target_sum * target_sum).clamp(min=self.epsilon), requires_grad=False)
 
         intersect = (input * target).sum(-1) * class_weights
         if self.weight is not None:
@@ -152,7 +157,8 @@ class BCELossWrapper:
 
     def __init__(self, loss_criterion, ignore_index=-1, skip_last_target=False):
         if hasattr(loss_criterion, 'ignore_index'):
-            raise RuntimeError(f"Cannot wrap {type(loss_criterion)}. Use 'ignore_index' attribute instead")
+            raise RuntimeError(
+                f"Cannot wrap {type(loss_criterion)}. Use 'ignore_index' attribute instead")
         self.loss_criterion = loss_criterion
         self.ignore_index = ignore_index
         self.skip_last_target = skip_last_target
@@ -283,42 +289,7 @@ def flatten(tensor):
     # Transpose: (N, C, D, H, W) -> (C, N, D, H, W)
     transposed = tensor.permute(axis_order)
     # Flatten: (C, N, D, H, W) -> (C, N * D * H * W)
-    return transposed.view(C, -1)
-
-
-def expand_as_one_hot(input, C, ignore_index=None):
-    """
-    Converts NxDxHxW label image to NxCxDxHxW, where each label gets converted to its corresponding one-hot vector
-    :param input: 4D input image (NxDxHxW)
-    :param C: number of channels/labels
-    :param ignore_index: ignore index to be kept during the expansion
-    :return: 5D output image (NxCxDxHxW)
-    """
-    assert input.dim() == 4
-
-    shape = input.size()
-    shape = list(shape)
-    shape.insert(1, C)
-    shape = tuple(shape)
-
-    # expand the input tensor to Nx1xDxHxW
-    src = input.unsqueeze(0)
-
-    if ignore_index is not None:
-        # create ignore_index mask for the result
-        expanded_src = src.expand(shape)
-        mask = expanded_src == ignore_index
-        # clone the src tensor and zero out ignore_index in the input
-        src = src.clone()
-        src[src == ignore_index] = 0
-        # scatter to get the one-hot tensor
-        result = torch.zeros(shape).to(input.device).scatter_(1, src, 1)
-        # bring back the ignore_index in the result
-        result[mask] = ignore_index
-        return result
-    else:
-        # scatter to get the one-hot tensor
-        return torch.zeros(shape).to(input.device).scatter_(1, src, 1)
+    return transposed.contiguous().view(C, -1)
 
 
 SUPPORTED_LOSSES = ['BCEWithLogitsLoss', 'CrossEntropyLoss', 'WeightedCrossEntropyLoss', 'PixelWiseCrossEntropyLoss',
@@ -377,5 +348,9 @@ def get_loss_criterion(config):
         return SmoothL1Loss()
     elif name == 'L1Loss':
         return L1Loss()
+    elif name == 'ContrastiveLoss':
+        return ContrastiveLoss(loss_config['delta_var'], loss_config['delta_dist'], loss_config['norm'],
+                               loss_config['alpha'], loss_config['beta'], loss_config['gamma'])
     else:
-        raise RuntimeError(f"Unsupported loss function: '{name}'. Supported losses: {SUPPORTED_LOSSES}")
+        raise RuntimeError(
+            f"Unsupported loss function: '{name}'. Supported losses: {SUPPORTED_LOSSES}")
